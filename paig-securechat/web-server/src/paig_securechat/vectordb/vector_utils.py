@@ -150,17 +150,17 @@ def get_all_files(folder_path):
             file_path = os.path.join(root, file)
             if file.endswith('.tar'):
                 with tarfile.open(file_path, 'r') as tar:
-                    tar.extractall(path=root)
+                    _safe_extract_tar(tar, path=root)
                     files = get_all_files(os.path.join(root, file.split('.')[0]))
                     all_files.extend(files)
             elif file.endswith('.zip'):
                 with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                    zip_ref.extractall(path=root)
+                    _safe_extract_zip(zip_ref, path=root)
                     files = get_all_files(os.path.join(root, file.split('.')[0]))
                     all_files.extend(files)
             elif file.endswith('.tgz'):
                 with tarfile.open(file_path, 'r:gz') as tar:
-                    tar.extractall(path=root)
+                    _safe_extract_tar(tar, path=root)
                     files = get_all_files(os.path.join(root, file.split('.')[0]))
                     all_files.extend(files)
             else:
@@ -169,6 +169,51 @@ def get_all_files(folder_path):
             logger.info(f"Tuple of {file} and {file_path} added to all files list")
     logger.info(f"Collected all files from {folder_path}")
     return all_files
+
+
+def _is_within_directory(directory, target):
+    abs_directory = os.path.abspath(directory)
+    abs_target = os.path.abspath(target)
+    try:
+        common_path = os.path.commonpath([abs_directory, abs_target])
+    except Exception:
+        return False
+    return common_path == abs_directory
+
+
+def _safe_extract_tar(tar: tarfile.TarFile, path: str) -> None:
+    for member in tar.getmembers():
+        member_path = os.path.join(path, member.name)
+        # Disallow absolute paths, parent traversal, and links
+        if member.name.startswith("/") or ".." in member.name.split(os.sep) or member.islnk() or member.issym():
+            logger.warning(f"Skipping potentially unsafe tar entry: {member.name}")
+            continue
+        if not _is_within_directory(path, member_path):
+            logger.warning(f"Skipping path traversal attempt in tar entry: {member.name}")
+            continue
+        tar.extract(member, path=path)
+
+
+def _safe_extract_zip(zip_ref: zipfile.ZipFile, path: str) -> None:
+    for member in zip_ref.infolist():
+        # Normalize name to avoid tricks like backslashes on Windows-like names
+        member_name = member.filename
+        if member_name.startswith("/") or member_name.startswith("\\"):
+            logger.warning(f"Skipping potentially unsafe zip entry: {member_name}")
+            continue
+        dest_path = os.path.join(path, member_name)
+        if not _is_within_directory(path, dest_path):
+            logger.warning(f"Skipping path traversal attempt in zip entry: {member_name}")
+            continue
+        # Create directories as needed
+        dest_dir = os.path.dirname(dest_path)
+        if dest_dir and not os.path.exists(dest_dir):
+            os.makedirs(dest_dir, exist_ok=True)
+        if member.is_dir():
+            os.makedirs(dest_path, exist_ok=True)
+        else:
+            with zip_ref.open(member) as source, open(dest_path, 'wb') as target:
+                shutil.copyfileobj(source, target)
 
 
 def check_valid_directory(directory):
